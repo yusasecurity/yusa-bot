@@ -1,0 +1,18 @@
+{
+  "name": "yusa-bot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/bot.ts",
+    "test": "node --test src/*.test.ts"
+  },
+  "dependencies": {
+    "viem": "2.56.3"
+  },
+  "license": "MIT",
+  "description": "Telegram bot for YUSA: scan text, tokens and web pages for prompt injection",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yusasecurity/yusa-bot.git"
+  }
+}
