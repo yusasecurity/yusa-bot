@@ -1,7 +1,7 @@
 import { readFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { holdings, tokenInfo, verifySignature } from "../src/chain.ts";
+import { holdings, tokenInfo, txReader, verifySignature } from "../src/chain.ts";
 import { Bot } from "../src/handlers.ts";
 import { fetchPage } from "../src/page.ts";
 import { Store } from "../src/store.ts";
@@ -17,7 +17,7 @@ const wh = await api("getWebhookInfo");
 console.log("webhook:", wh.result.url || "none (long polling)", "| pending:", wh.result.pending_update_count);
 
 const store = new Store(join(mkdtempSync(join(tmpdir(), "yb-")), "s.json"));
-const bot = new Bot(store, { tokenInfo, holdings, verifySignature, fetchPage: (u) => fetchPage(u) }, {
+const bot = new Bot(store, { tokenInfo, holdings, verifySignature, fetchPage: (u) => fetchPage(u), tx: txReader }, {
   gatingToken: env.YUSA_TOKEN as `0x${string}`, minHold: Number(env.YUSA_MIN_HOLD), freePerDay: Number(env.FREE_PER_DAY), holderPerDay: Number(env.HOLDER_PER_DAY), linkPage: env.LINK_PAGE,
 });
 const dm = { userId: 1, private: true };
@@ -31,6 +31,6 @@ console.log("\n/link -> signing page", page.status, (await page.text()).includes
 const urls = (process.argv[2] ?? "").split(",").filter(Boolean);
 for (const u of urls) {
   const t = Date.now();
-  const out = (await new Bot(new Store(join(mkdtempSync(join(tmpdir(), "yb-")), "s.json")), { tokenInfo, holdings, verifySignature, fetchPage: (x) => fetchPage(x) }, { gatingToken: env.YUSA_TOKEN as `0x${string}`, minHold: 1, freePerDay: 99, holderPerDay: 99, linkPage: env.LINK_PAGE }).handle(dm, `/url ${u}`))!;
+  const out = (await new Bot(new Store(join(mkdtempSync(join(tmpdir(), "yb-")), "s.json")), { tokenInfo, holdings, verifySignature, fetchPage: (x) => fetchPage(x), tx: txReader }, { gatingToken: env.YUSA_TOKEN as `0x${string}`, minHold: 1, freePerDay: 99, holderPerDay: 99, linkPage: env.LINK_PAGE }).handle(dm, `/url ${u}`))!;
   console.log(`\n/url ${u}  [${Date.now() - t} ms]\n${out.split("\n").slice(0, 7).join("\n")}`);
 }

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { getAddress } from "viem";
-import { holdings, tokenInfo, verifySignature } from "./chain.ts";
+import { holdings, tokenInfo, txReader, verifySignature } from "./chain.ts";
 import { Bot } from "./handlers.ts";
 import { fetchPage } from "./page.ts";
 import { Store } from "./store.ts";
@@ -16,7 +16,7 @@ if (!TOKEN) throw new Error("TELEGRAM_BOT_TOKEN missing in .env");
 const API = `https://api.telegram.org/bot${TOKEN}`;
 
 const store = new Store(ROOT + "data/state.json");
-const bot = new Bot(store, { tokenInfo, holdings, verifySignature, fetchPage: (u) => fetchPage(u) }, {
+const bot = new Bot(store, { tokenInfo, holdings, verifySignature, fetchPage: (u) => fetchPage(u), tx: txReader }, {
   gatingToken: getAddress(process.env.YUSA_TOKEN || "0x1fb8D9A8d1CEEB4C8d3C766C19a9473e53A43B0C"),
   minHold: Number(process.env.YUSA_MIN_HOLD || 100_000),
   freePerDay: Number(process.env.FREE_PER_DAY || 5),
@@ -24,11 +24,20 @@ const bot = new Bot(store, { tokenInfo, holdings, verifySignature, fetchPage: (u
   linkPage: process.env.LINK_PAGE || "https://yusasecurity.xyz/link.html",
 });
 
+const POLL_TIMEOUT_S = 50;
+
 async function tg<T>(method: string, body: unknown): Promise<T> {
-  const res = await fetch(`${API}/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  // A hung socket must not freeze the bot: long polls get the poll window plus slack, everything else 15s.
+  const ms = method === "getUpdates" ? (POLL_TIMEOUT_S + 15) * 1000 : 15_000;
+  const res = await fetch(`${API}/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
   const json = (await res.json()) as { ok: boolean; result: T; description?: string };
   if (!json.ok) throw new Error(`${method}: ${json.description}`);
   return json.result;
+}
+
+function why(e: unknown): string {
+  const err = e as Error & { cause?: { code?: string; message?: string } };
+  return [err.name === "TimeoutError" ? "timeout" : err.message, err.cause?.code ?? err.cause?.message].filter(Boolean).join(" / ");
 }
 
 // Plain text only: no parse_mode, so scanned content cannot inject Telegram markup.
@@ -45,6 +54,7 @@ await tg("setMyCommands", {
     { command: "scan", description: "Scan text for prompt injection" },
     { command: "ca", description: "Scan a Robinhood Chain token" },
     { command: "url", description: "Scan a web page as an agent reads it" },
+    { command: "tx", description: "Explain a transaction before you sign it" },
     { command: "me", description: "Your tier and scans left" },
     { command: "link", description: "Link a wallet for the holder tier" },
     { command: "help", description: "How it works" },
@@ -56,9 +66,9 @@ console.log(`yusa-bot @${me.username} running`);
 for (;;) {
   let updates: Update[] = [];
   try {
-    updates = await tg<Update[]>("getUpdates", { offset: store.state.offset, timeout: 50, allowed_updates: ["message"] });
+    updates = await tg<Update[]>("getUpdates", { offset: store.state.offset, timeout: POLL_TIMEOUT_S, allowed_updates: ["message"] });
   } catch (e) {
-    console.error("poll", (e as Error).message);
+    console.error(new Date().toISOString(), "poll", why(e));
     await new Promise((r) => setTimeout(r, 5000));
     continue;
   }
@@ -71,7 +81,7 @@ for (;;) {
       const out = await bot.handle({ userId: msg.from.id, private: msg.chat.type === "private" }, text);
       if (out) await send(msg.chat.id, out, msg.message_id);
     } catch (e) {
-      console.error("handle", (e as Error).message);
+      console.error(new Date().toISOString(), "handle", why(e));
       await send(msg.chat.id, "Something went wrong on our side. Try again in a minute.", msg.message_id).catch(() => {});
     }
   }

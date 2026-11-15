@@ -3,6 +3,7 @@ import { getAddress, isAddress, type Address, type Hex } from "viem";
 import { maskSecrets, scan, type ScanResult } from "../../yusa/src/engine/scan.ts";
 import type { TokenInfo } from "./chain.ts";
 import { agentView, FetchError, type Page } from "./page.ts";
+import { explain, type TxReader } from "./tx.ts";
 import type { Store } from "./store.ts";
 
 export interface Config {
@@ -18,6 +19,7 @@ export interface Chain {
   holdings(token: Address, holder: Address): Promise<number>;
   verifySignature(address: Address, message: string, signature: Hex): Promise<boolean>;
   fetchPage(url: string): Promise<Page>;
+  tx: TxReader;
 }
 
 export interface Ctx {
@@ -58,6 +60,7 @@ export class Bot {
     if (!cmd) {
       if (!ctx.private) return null;
       if (/^0x[0-9a-f]{130}$/i.test(text)) return this.verify(ctx, text);
+      if (/^0x[0-9a-f]{64}$/i.test(text)) return this.metered(ctx, () => this.tx(text));
       if (/^0x[0-9a-f]{40}$/i.test(text)) return this.metered(ctx, () => this.ca(text));
       if (/^https?:\/\/\S+$/i.test(text)) return this.metered(ctx, () => this.url(text));
       return this.metered(ctx, () => this.scanText(text));
@@ -76,6 +79,11 @@ export class Bot {
       case "url":
         if (!/^https?:\/\/\S+$/i.test(arg)) return "Usage: /url <https://link>\nOr in a private chat, just send the link.";
         return this.metered(ctx, () => this.url(arg));
+      case "tx":
+        if (!/^0x[0-9a-f]{64}$/i.test(arg) && !/^0x[0-9a-f]{40}\s+0x[0-9a-f]{8,}$/i.test(arg)) {
+          return "Usage:\n/tx <tx hash>  explain a Robinhood Chain transaction\n/tx <contract> <calldata>  explain a transaction before you sign it (paste the 'to' address and the hex 'data' your wallet shows)";
+        }
+        return this.metered(ctx, () => this.tx(arg));
       case "link":
         return this.link(ctx, arg);
       case "verify":
@@ -101,6 +109,7 @@ export class Bot {
       "/scan <text>  scan any text (in a private chat, just send it)",
       "/ca <address>  scan a Robinhood Chain token: name, symbol, and for Pons launches the description and socials your agent would read",
       "/url <link>  fetch a web page and scan what an agent would read from it, including comments and CSS-hidden text",
+      "/tx <hash>  explain what a Robinhood Chain transaction does to your tokens. Before signing: /tx <contract> <calldata>",
       "/me  your tier and scans left today",
       "/link <wallet>  link a wallet to get the holder tier",
       "/unlink",
@@ -203,6 +212,39 @@ export class Bot {
       ? "\nEvery finding is in text a reader can see. Articles about prompt injection quote these phrases; check whether the page is quoting an attack or making one."
       : "";
     return head.join("\n") + report(r) + note;
+  }
+
+  private async tx(arg: string): Promise<string> {
+    const parts = arg.trim().split(/\s+/);
+    let to: Address | null, data: Hex, value = 0n, head: string;
+    const sent = parts.length === 1;
+    if (sent) {
+      let t;
+      try {
+        t = await this.chain.tx.transaction(parts[0] as Hex);
+      } catch (e) {
+        return `Could not read that transaction from Robinhood Chain: ${(e as Error).message.split("\n")[0]}`;
+      }
+      if (!t) return "No transaction with that hash on Robinhood Chain. A wallet address or a token address is 40 hex characters; use /ca for a token.";
+      ({ to, input: data, value } = t);
+      head = `Transaction ${parts[0].slice(0, 10)}… from ${t.from}${to ? ` to ${to}` : ""}`;
+    } else {
+      to = getAddress(parts[0]);
+      data = parts[1] as Hex;
+      head = `Unsigned call to ${to}`;
+    }
+    try {
+      const r = await explain({ to, data, value }, this.chain.tx);
+      const label = sent
+        ? r.verdict === "block" ? "DANGER: ALREADY SENT" : r.verdict === "review" ? "NEEDS A CLOSER LOOK" : "LOOKS ROUTINE"
+        : r.verdict === "block" ? "DANGER: DO NOT SIGN" : r.verdict === "review" ? "CHECK BEFORE SIGNING" : "LOOKS ROUTINE";
+      const after = sent && r.verdict === "block"
+        ? ["", "If this was your wallet, revoke the approval now (for example with revoke.cash) and move what is left to a fresh wallet."]
+        : [];
+      return [head, "", label, ...r.lines.map((l) => `- ${l}`), ...after, "", "This reads the calldata only. It does not simulate the call or vouch for the contract."].join("\n");
+    } catch (e) {
+      return `Could not read that transaction: ${(e as Error).message.split("\n")[0]}`;
+    }
   }
 
   private link(ctx: Ctx, arg: string): string {

@@ -11,6 +11,8 @@ import { FetchError } from "./page.ts";
 import type { TokenInfo } from "./chain.ts";
 
 const TOKEN: Address = "0x1fb8D9A8d1CEEB4C8d3C766C19a9473e53A43B0C";
+const DRAIN_HASH = `0x${"ab".repeat(32)}` as const;
+const DRAIN_DATA = `0x095ea7b3${"9f2c6e0b5a1d4c7e8f3a2b1c0d9e8f7a6b5c4d3e".padStart(64, "0")}${"f".repeat(64)}` as const;
 const tag = (s: string) => Array.from(s, (c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0))).join("");
 
 function setup(balances: Record<string, number> = {}, tokens: Record<string, TokenInfo> = {}, pages: Record<string, string> = {}) {
@@ -23,6 +25,11 @@ function setup(balances: Record<string, number> = {}, tokens: Record<string, Tok
     fetchPage: async (url) => {
       if (!(url in pages)) throw new FetchError("That address is private or reserved.");
       return { url, status: 200, contentType: "text/html; charset=utf-8", bytes: pages[url].length, truncated: false, body: pages[url] };
+    },
+    tx: {
+      transaction: async (h) => (h === DRAIN_HASH ? { from: "0x4444444444444444444444444444444444444444", to: TOKEN, input: DRAIN_DATA, value: 0n } : null),
+      isContract: async (a) => a.toLowerCase() === TOKEN.toLowerCase(),
+      token: async () => ({ symbol: "YUSA", decimals: 18 }),
     },
   };
   const store = new Store(join(mkdtempSync(join(tmpdir(), "yusa-bot-")), "state.json"));
@@ -178,6 +185,27 @@ test("url: refused fetches and bad input are explained, and count against the qu
   assert.match((await bot.handle(dm(), "/url http://169.254.169.254/latest"))!, /^Could not scan that link: That address is private/);
   assert.match((await bot.handle(dm(), "/url not-a-link"))!, /^Usage: \/url/);
   assert.equal(await bot.handle(group(), "https://bad.example/"), null);
+});
+
+test("tx: a hash is looked up and explained; a bare hash in a private chat works too", async () => {
+  const { bot } = setup();
+  const out = (await bot.handle(dm(), `/tx ${DRAIN_HASH}`))!;
+  assert.match(out, /^Transaction 0xabababab… from 0x4444/);
+  assert.match(out, /\nDANGER: ALREADY SENT\n/);
+  assert.match(out, /UNLIMITED of \$YUSA/);
+  assert.match(out, /revoke the approval now/);
+  assert.match(out, /does not simulate/);
+  assert.match((await bot.handle(dm(), DRAIN_HASH))!, /DANGER: ALREADY SENT/);
+});
+
+test("tx: unknown hash, calldata form, and usage", async () => {
+  const { bot } = setup();
+  assert.match((await bot.handle(dm(), `/tx 0x${"cd".repeat(32)}`))!, /^No transaction with that hash/);
+  const pre = (await bot.handle(dm(), `/tx ${TOKEN} ${DRAIN_DATA}`))!;
+  assert.match(pre, /^Unsigned call to 0x1fb8/);
+  assert.match(pre, /\nDANGER: DO NOT SIGN\n/);
+  assert.ok(!/revoke the approval now/.test(pre), "nothing to revoke before signing");
+  assert.match((await bot.handle(dm(), "/tx hello"))!, /^Usage:/);
 });
 
 test("ca: plain address in a private chat, and non-contracts", async () => {

@@ -7,6 +7,7 @@ Telegram bot for [YUSA](https://github.com/yusasecurity/yusa), the prompt-inject
 | `/scan <text>` | Scans text for prompt injection: hidden Unicode, look-alike letters, fake system prompts, drain and exfiltration orders. In a private chat, just send the text. |
 | `/ca <address>` | Scans a Robinhood Chain token. For Pons launches it reads the description and socials from the launch transaction, the text an agent would read. |
 | `/url <link>` | Fetches a public web page and scans what an agent would read from it, including HTML comments and text hidden with CSS. In a private chat, just send the link. |
+| `/tx <hash>` | Explains what a Robinhood Chain transaction does to your tokens: approvals (flags unlimited ones and approvals to a plain wallet, the drainer pattern), transfers, setApprovalForAll, permit and Permit2. Before signing: `/tx <contract> <calldata>`. Reads calldata only; it does not simulate. |
 | `/me` | Your tier and scans left today. |
 | `/link <wallet>` | Links a wallet for the holder tier. |
 

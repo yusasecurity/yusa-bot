@@ -117,6 +117,32 @@ export async function holdings(gatingToken: Address, holder: Address): Promise<n
   return Number(raw / 10n ** BigInt(decimalsCache));
 }
 
+export const txReader = {
+  async transaction(hash: Hex) {
+    try {
+      const t = await client.getTransaction({ hash });
+      return { from: t.from, to: t.to ?? null, input: t.input, value: t.value };
+    } catch (e) {
+      if ((e as Error).name === "TransactionNotFoundError") return null;
+      throw e;
+    }
+  },
+  async isContract(address: Address) {
+    const code = await client.getCode({ address });
+    return !!code && code !== "0x";
+  },
+  async token(address: Address) {
+    const [symbol, decimals] = await Promise.allSettled([
+      client.readContract({ address, abi: erc20, functionName: "symbol" }),
+      client.readContract({ address, abi: erc20, functionName: "decimals" }),
+    ]);
+    return {
+      symbol: symbol.status === "fulfilled" ? symbol.value : undefined,
+      decimals: decimals.status === "fulfilled" ? decimals.value : undefined,
+    };
+  },
+};
+
 /** EIP-191 signature check; also accepts ERC-1271 smart wallets. */
 export function verifySignature(address: Address, message: string, signature: Hex): Promise<boolean> {
   return client.verifyMessage({ address, message, signature });
