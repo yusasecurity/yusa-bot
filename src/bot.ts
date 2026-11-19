@@ -47,7 +47,18 @@ async function send(chatId: number, text: string, replyTo?: number) {
   }
 }
 
-type Update = { update_id: number; message?: { message_id: number; chat: { id: number; type: string }; from?: { id: number; is_bot: boolean }; text?: string; caption?: string } };
+type Update = { update_id: number; message?: { message_id: number; chat: { id: number; type: string }; from?: { id: number; is_bot: boolean }; text?: string; caption?: string; sender_chat?: { id: number } } };
+
+const adminCache = new Map<string, { ok: boolean; at: number }>();
+async function isAdmin(chatId: number, userId: number): Promise<boolean> {
+  const key = `${chatId}:${userId}`;
+  const c = adminCache.get(key);
+  if (c && Date.now() - c.at < 5 * 60_000) return c.ok;
+  const m = await tg<{ status: string }>("getChatMember", { chat_id: chatId, user_id: userId });
+  const ok = m.status === "creator" || m.status === "administrator";
+  adminCache.set(key, { ok, at: Date.now() });
+  return ok;
+}
 
 await tg("setMyCommands", {
   commands: [
@@ -56,6 +67,7 @@ await tg("setMyCommands", {
     { command: "url", description: "Scan a web page as an agent reads it" },
     { command: "tx", description: "Explain a transaction before you sign it" },
     { command: "me", description: "Your tier and scans left" },
+    { command: "guard", description: "Group admins: auto-check links and token addresses" },
     { command: "link", description: "Link a wallet for the holder tier" },
     { command: "help", description: "How it works" },
   ],
@@ -78,7 +90,15 @@ for (;;) {
     const text = msg?.text ?? msg?.caption;
     if (!msg || !text || !msg.from || msg.from.is_bot) continue;
     try {
-      const out = await bot.handle({ userId: msg.from.id, private: msg.chat.type === "private" }, text);
+      const priv = msg.chat.type === "private";
+      // Anonymous admins post as the group itself (sender_chat), which Telegram vouches is an admin.
+      const anonAdmin = msg.sender_chat?.id === msg.chat.id;
+      const out = await bot.handle({
+        userId: msg.from.id,
+        private: priv,
+        chatId: priv ? undefined : msg.chat.id,
+        isAdmin: priv ? undefined : () => (anonAdmin ? Promise.resolve(true) : isAdmin(msg.chat.id, msg.from!.id)),
+      }, text);
       if (out) await send(msg.chat.id, out, msg.message_id);
     } catch (e) {
       console.error(new Date().toISOString(), "handle", why(e));

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { getAddress, isAddress, type Address, type Hex } from "viem";
+import { english as BIP39 } from "viem/accounts";
 import { maskSecrets, scan, type ScanResult } from "../../yusa/src/engine/scan.ts";
 import type { TokenInfo } from "./chain.ts";
 import { agentView, FetchError, type Page } from "./page.ts";
@@ -25,11 +26,24 @@ export interface Chain {
 export interface Ctx {
   userId: number;
   private: boolean;
+  chatId?: number;
+  /** Group admin or creator; set by the transport for group messages. */
+  isAdmin?: () => Promise<boolean>;
 }
 
 const CHALLENGE_TTL_MS = 15 * 60_000;
 const BALANCE_TTL_MS = 5 * 60_000;
 const MAX_TEXT = 20_000;
+// Passive checks a guarded group gets per day; each CA, link or hidden-text scan uses one.
+const GROUP_CHECKS_PER_DAY = 200;
+const MAX_ITEMS_PER_MESSAGE = 3;
+// Keys pasted by mistake: 64 hex without 0x (tx hashes carry 0x), or a 12/24-word phrase on its own.
+const BARE_KEY = /(?<![0-9a-fx])[0-9a-f]{64}(?![0-9a-f])/i;
+const BIP39_WORDS = new Set(BIP39);
+function looksLikeSeed(text: string): boolean {
+  const words = text.trim().toLowerCase().split(/\s+/);
+  return [12, 15, 18, 21, 24].includes(words.length) && words.every((w) => BIP39_WORDS.has(w));
+}
 
 export function linkMessage(userId: number, address: string, nonce: string, expires: string): string {
   return `YUSA bot wallet link\nTelegram user: ${userId}\nWallet: ${address}\nNonce: ${nonce}\nExpires: ${expires}\nThis signature moves nothing and costs nothing.`;
@@ -58,7 +72,7 @@ export class Bot {
     const arg = (m?.[2] ?? "").trim();
 
     if (!cmd) {
-      if (!ctx.private) return null;
+      if (!ctx.private) return ctx.chatId !== undefined && this.store.group(ctx.chatId).guard ? this.guardMessage(ctx.chatId, text) : null;
       if (/^0x[0-9a-f]{130}$/i.test(text)) return this.verify(ctx, text);
       if (/^0x[0-9a-f]{64}$/i.test(text)) return this.metered(ctx, () => this.tx(text));
       if (/^0x[0-9a-f]{40}$/i.test(text)) return this.metered(ctx, () => this.ca(text));
@@ -97,6 +111,8 @@ export class Bot {
       }
       case "me":
         return this.me(ctx);
+      case "guard":
+        return this.guardCommand(ctx, arg.toLowerCase());
       default:
         return null;
     }
@@ -111,6 +127,7 @@ export class Bot {
       "/url <link>  fetch a web page and scan what an agent would read from it, including comments and CSS-hidden text",
       "/tx <hash>  explain what a Robinhood Chain transaction does to your tokens. Before signing: /tx <contract> <calldata>",
       "/me  your tier and scans left today",
+      "/guard on  (group admins) check every token address, link and hidden text members post; the bot stays quiet unless something is wrong",
       "/link <wallet>  link a wallet to get the holder tier",
       "/unlink",
       "",
@@ -245,6 +262,83 @@ export class Bot {
     } catch (e) {
       return `Could not read that transaction: ${(e as Error).message.split("\n")[0]}`;
     }
+  }
+
+  private async guardCommand(ctx: Ctx, arg: string): Promise<string> {
+    if (ctx.private || ctx.chatId === undefined) return "Add me to a group, then a group admin sends /guard on there.";
+    const g = this.store.group(ctx.chatId);
+    if (arg === "" || arg === "status") {
+      const used = g.day === this.day() ? (g.used ?? 0) : 0;
+      return g.guard
+        ? `Guard is ON. ${Math.max(0, GROUP_CHECKS_PER_DAY - used)} of ${GROUP_CHECKS_PER_DAY} checks left today. An admin can turn it off with /guard off.`
+        : "Guard is OFF. A group admin can turn it on with /guard on.";
+    }
+    if (arg !== "on" && arg !== "off") return "Usage: /guard on | off | status";
+    if (!ctx.isAdmin || !(await ctx.isAdmin().catch(() => false))) return "Only a group admin can change the guard.";
+    g.guard = arg === "on";
+    if (g.guard) g.enabledBy = ctx.userId;
+    this.store.save();
+    return g.guard
+      ? [
+          "Guard is ON for this group.",
+          "",
+          "I check token addresses, links and transaction hashes members post, plus any hidden text in a message. I only reply when something looks wrong, so a clean chat stays quiet.",
+          "I also warn if someone pastes what looks like a private key or seed phrase.",
+          "",
+          "For me to see normal messages, Privacy Mode must be off: @BotFather > /mybots > this bot > Bot Settings > Group Privacy > Turn off, or make me a group admin.",
+        ].join("\n")
+      : "Guard is OFF for this group. Commands still work.";
+  }
+
+  private takeGroupCheck(chatId: number): boolean {
+    const g = this.store.group(chatId);
+    const today = this.day();
+    if (g.day !== today) {
+      g.day = today;
+      g.used = 0;
+    }
+    if ((g.used ?? 0) >= GROUP_CHECKS_PER_DAY) return false;
+    g.used = (g.used ?? 0) + 1;
+    return true;
+  }
+
+  /** Passive check of a group message. Returns a warning, or null to stay quiet. */
+  private async guardMessage(chatId: number, text: string): Promise<string | null> {
+    const keyWarning = "Careful: this looks like a private key or a seed phrase. Anyone in this chat can use it to empty that wallet. Delete the message now and move your funds to a new wallet.";
+    if (BARE_KEY.test(text) || looksLikeSeed(text)) return keyWarning;
+    const warnings: string[] = [];
+    const before = this.store.group(chatId).used ?? 0;
+
+    if (text.length <= MAX_TEXT && this.takeGroupCheck(chatId)) {
+      const r = scan(text);
+      if (r.findings.some((f) => f.category === "secret")) return keyWarning;
+      // People discuss prompt injection out loud in chats, so visible text is never reported here;
+      // text hidden from the reader is.
+      const hidden = r.findings.filter((f) => f.layer !== "visible");
+      if (hidden.length) warnings.push(report({ ...r, findings: hidden }));
+      else this.refund(chatId);
+    }
+
+    const items = [
+      ...[...text.matchAll(/(?<![0-9a-fx])0x[0-9a-f]{64}(?![0-9a-f])/gi)].map((m) => ({ kind: "tx" as const, v: m[0] })),
+      ...[...text.matchAll(/(?<![0-9a-fx])0x[0-9a-f]{40}(?![0-9a-f])/gi)].map((m) => ({ kind: "ca" as const, v: m[0] })),
+      ...[...text.matchAll(/https?:\/\/[^\s<>"']+/gi)].map((m) => ({ kind: "url" as const, v: m[0].replace(/[).,;!?]+$/, "") })),
+    ];
+    const seen = new Set<string>();
+    for (const it of items) {
+      if (seen.size >= MAX_ITEMS_PER_MESSAGE || seen.has(it.v.toLowerCase())) continue;
+      seen.add(it.v.toLowerCase());
+      if (!this.takeGroupCheck(chatId)) break;
+      const out = it.kind === "ca" ? await this.ca(it.v) : it.kind === "url" ? await this.url(it.v) : await this.tx(it.v);
+      if (/(^|\n)(BLOCK|REVIEW) ·|\n(DANGER|NEEDS A CLOSER LOOK)/.test(out)) warnings.push(out);
+    }
+    if ((this.store.group(chatId).used ?? 0) !== before) this.store.save();
+    return warnings.length ? `YUSA guard\n\n${warnings.join("\n\n---\n\n")}` : null;
+  }
+
+  private refund(chatId: number) {
+    const g = this.store.group(chatId);
+    g.used = Math.max(0, (g.used ?? 1) - 1);
   }
 
   private link(ctx: Ctx, arg: string): string {

@@ -8,9 +8,17 @@ export interface User {
   used?: number;
 }
 
+export interface Group {
+  guard?: boolean;
+  enabledBy?: number;
+  day?: string;
+  used?: number;
+}
+
 export interface State {
   offset: number;
   users: Record<string, User>;
+  groups?: Record<string, Group>;
 }
 
 export class Store {
@@ -22,6 +30,9 @@ export class Store {
   }
   user(id: number): User {
     return (this.state.users[String(id)] ??= {});
+  }
+  group(id: number): Group {
+    return ((this.state.groups ??= {})[String(id)] ??= {});
   }
   save() {
     mkdirSync(dirname(this.file), { recursive: true });
