@@ -8,6 +8,7 @@ Telegram bot for [YUSA](https://github.com/yusasecurity/yusa), the prompt-inject
 | `/ca <address>` | Scans a Robinhood Chain token. For Pons launches it reads the description and socials from the launch transaction, the text an agent would read. |
 | `/url <link>` | Fetches a public web page and scans what an agent would read from it, including HTML comments and text hidden with CSS. In a private chat, just send the link. |
 | `/tx <hash>` | Explains what a Robinhood Chain transaction does to your tokens: approvals (flags unlimited ones and approvals to a plain wallet, the drainer pattern), transfers, setApprovalForAll, permit and Permit2. Before signing: `/tx <contract> <calldata>`. Reads calldata only; it does not simulate. |
+| `/approvals <wallet>` | Lists token approvals still open on a wallet, grouped by spender: approvals to a plain wallet (the drainer pattern) first, then unlimited ones to unknown contracts, then routine ones like Permit2. Reads the live allowance, so revoked approvals are not listed. Says how much history it covered. Needs `LOGS_RPC_URL`. One per user per minute. |
 | `/guard on` | Group admins: the bot checks every token address, link and transaction hash members post, plus text hidden in a message, and warns about pasted private keys or seed phrases. It only replies when something looks wrong. Needs Group Privacy off in @BotFather, or the bot as a group admin. 200 checks per group per day. |
 | `/me` | Your tier and scans left today. |
 | `/link <wallet>` | Links a wallet for the holder tier. |

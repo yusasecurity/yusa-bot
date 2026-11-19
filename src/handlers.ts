@@ -5,6 +5,7 @@ import { maskSecrets, scan, type ScanResult } from "../../yusa/src/engine/scan.t
 import type { TokenInfo } from "./chain.ts";
 import { agentView, FetchError, type Page } from "./page.ts";
 import { explain, type TxReader } from "./tx.ts";
+import { formatApprovals, openApprovals, type ApprovalSource } from "./approvals.ts";
 import type { Store } from "./store.ts";
 
 export interface Config {
@@ -21,6 +22,8 @@ export interface Chain {
   verifySignature(address: Address, message: string, signature: Hex): Promise<boolean>;
   fetchPage(url: string): Promise<Page>;
   tx: TxReader;
+  /** Null when no log-capable RPC is configured; /approvals then says it is off. */
+  approvals?: ApprovalSource | null;
 }
 
 export interface Ctx {
@@ -37,6 +40,8 @@ const MAX_TEXT = 20_000;
 // Passive checks a guarded group gets per day; each CA, link or hidden-text scan uses one.
 const GROUP_CHECKS_PER_DAY = 200;
 const MAX_ITEMS_PER_MESSAGE = 3;
+// /approvals runs many paid RPC calls, so one per user per minute.
+const APPROVALS_COOLDOWN_MS = 60_000;
 // Keys pasted by mistake: 64 hex without 0x (tx hashes carry 0x), or a 12/24-word phrase on its own.
 const BARE_KEY = /(?<![0-9a-fx])[0-9a-f]{64}(?![0-9a-f])/i;
 const BIP39_WORDS = new Set(BIP39);
@@ -51,6 +56,7 @@ export function linkMessage(userId: number, address: string, nonce: string, expi
 
 export class Bot {
   private challenges = new Map<number, { address: Address; message: string; exp: number }>();
+  private lastApprovals = new Map<number, number>();
   private balances = new Map<string, { n: number; at: number }>();
 
   private store: Store;
@@ -98,6 +104,15 @@ export class Bot {
           return "Usage:\n/tx <tx hash>  explain a Robinhood Chain transaction\n/tx <contract> <calldata>  explain a transaction before you sign it (paste the 'to' address and the hex 'data' your wallet shows)";
         }
         return this.metered(ctx, () => this.tx(arg));
+      case "approvals": {
+        const target = arg || this.store.user(ctx.userId).address || "";
+        if (!isAddress(target, { strict: false })) return "Usage: /approvals <wallet>\nOr link a wallet first with /link, then just /approvals.";
+        if (!this.chain.approvals) return "Approval checks are switched off on this bot right now.";
+        const last = this.lastApprovals.get(ctx.userId) ?? 0;
+        if (this.now() - last < APPROVALS_COOLDOWN_MS) return `One approval check per minute. Try again in ${Math.ceil((APPROVALS_COOLDOWN_MS - (this.now() - last)) / 1000)} s.`;
+        this.lastApprovals.set(ctx.userId, this.now());
+        return this.metered(ctx, () => this.approvals(getAddress(target)));
+      }
       case "link":
         return this.link(ctx, arg);
       case "verify":
@@ -126,6 +141,7 @@ export class Bot {
       "/ca <address>  scan a Robinhood Chain token: name, symbol, and for Pons launches the description and socials your agent would read",
       "/url <link>  fetch a web page and scan what an agent would read from it, including comments and CSS-hidden text",
       "/tx <hash>  explain what a Robinhood Chain transaction does to your tokens. Before signing: /tx <contract> <calldata>",
+      "/approvals <wallet>  list token approvals still open on a wallet, and flag unlimited ones and approvals to plain wallets",
       "/me  your tier and scans left today",
       "/guard on  (group admins) check every token address, link and hidden text members post; the bot stays quiet unless something is wrong",
       "/link <wallet>  link a wallet to get the holder tier",
@@ -261,6 +277,14 @@ export class Bot {
       return [head, "", label, ...r.lines.map((l) => `- ${l}`), ...after, "", "This reads the calldata only. It does not simulate the call or vouch for the contract."].join("\n");
     } catch (e) {
       return `Could not read that transaction: ${(e as Error).message.split("\n")[0]}`;
+    }
+  }
+
+  private async approvals(owner: Address): Promise<string> {
+    try {
+      return formatApprovals(owner, await openApprovals(owner, this.chain.approvals!));
+    } catch (e) {
+      return `Could not read approvals for ${owner}: ${(e as Error).message.split("\n")[0].slice(0, 140)}`;
     }
   }
 

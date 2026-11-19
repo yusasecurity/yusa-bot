@@ -208,6 +208,24 @@ test("tx: unknown hash, calldata form, and usage", async () => {
   assert.match((await bot.handle(dm(), "/tx hello"))!, /^Usage:/);
 });
 
+test("approvals: off without a log RPC, usage, cooldown", async () => {
+  const { bot, advance } = setup();
+  assert.match((await bot.handle(dm(), "/approvals"))!, /^Usage: \/approvals/);
+  assert.match((await bot.handle(dm(), `/approvals ${TOKEN}`))!, /switched off/);
+  const withSrc = setup();
+  (withSrc.bot as unknown as { chain: Chain }).chain.approvals = {
+    head: async () => 100n,
+    logs: async () => [],
+    call: async () => "0x",
+    isContract: async () => true,
+  };
+  assert.match((await withSrc.bot.handle(dm(), `/approvals ${TOKEN}`))!, /None found/);
+  assert.match((await withSrc.bot.handle(dm(), `/approvals ${TOKEN}`))!, /One approval check per minute/);
+  withSrc.advance(61_000);
+  assert.match((await withSrc.bot.handle(dm(), `/approvals ${TOKEN}`))!, /None found/);
+  void advance;
+});
+
 test("ca: plain address in a private chat, and non-contracts", async () => {
   const { bot } = setup();
   assert.match((await bot.handle(dm(), "0x1111111111111111111111111111111111111111"))!, /is not a contract/);

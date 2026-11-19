@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { getAddress } from "viem";
-import { holdings, tokenInfo, txReader, verifySignature } from "./chain.ts";
+import { approvalSource, holdings, tokenInfo, txReader, verifySignature } from "./chain.ts";
 import { Bot } from "./handlers.ts";
 import { fetchPage } from "./page.ts";
 import { Store } from "./store.ts";
@@ -16,7 +16,7 @@ if (!TOKEN) throw new Error("TELEGRAM_BOT_TOKEN missing in .env");
 const API = `https://api.telegram.org/bot${TOKEN}`;
 
 const store = new Store(ROOT + "data/state.json");
-const bot = new Bot(store, { tokenInfo, holdings, verifySignature, fetchPage: (u) => fetchPage(u), tx: txReader }, {
+const bot = new Bot(store, { tokenInfo, holdings, verifySignature, fetchPage: (u) => fetchPage(u), tx: txReader, approvals: approvalSource() }, {
   gatingToken: getAddress(process.env.YUSA_TOKEN || "0x1fb8D9A8d1CEEB4C8d3C766C19a9473e53A43B0C"),
   minHold: Number(process.env.YUSA_MIN_HOLD || 100_000),
   freePerDay: Number(process.env.FREE_PER_DAY || 5),
@@ -66,6 +66,7 @@ await tg("setMyCommands", {
     { command: "ca", description: "Scan a Robinhood Chain token" },
     { command: "url", description: "Scan a web page as an agent reads it" },
     { command: "tx", description: "Explain a transaction before you sign it" },
+    { command: "approvals", description: "Open token approvals on a wallet" },
     { command: "me", description: "Your tier and scans left" },
     { command: "guard", description: "Group admins: auto-check links and token addresses" },
     { command: "link", description: "Link a wallet for the holder tier" },

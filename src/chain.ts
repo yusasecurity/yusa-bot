@@ -9,6 +9,8 @@ import {
   type Hex,
 } from "viem";
 
+import { TooManyLogs, type ApprovalSource, type Log } from "./approvals.ts";
+
 export const FACTORY: Address = "0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e";
 const LOG_WINDOW = 10_000_000n; // public RPC limit per eth_getLogs
 
@@ -146,4 +148,40 @@ export const txReader = {
 /** EIP-191 signature check; also accepts ERC-1271 smart wallets. */
 export function verifySignature(address: Address, message: string, signature: Hex): Promise<boolean> {
   return client.verifyMessage({ address, message, signature });
+}
+
+const APPROVAL_TOPICS = [
+  "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
+  "0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31",
+] as Hex[];
+
+/**
+ * Approval logs by owner across every token need an address-less eth_getLogs, which the public
+ * RPC caps at 30,000 blocks. LOGS_RPC_URL points at a provider without that cap (Alchemy).
+ */
+export function approvalSource(): ApprovalSource | null {
+  const url = process.env.LOGS_RPC_URL;
+  if (!url) return null;
+  const post = async (method: string, params: unknown[]) => {
+    const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(20_000) });
+    return (await res.json()) as { result?: unknown; error?: { message: string } };
+  };
+  return {
+    head: () => client.getBlockNumber(),
+    async logs(owner, from, to) {
+      const j = await post("eth_getLogs", [{ fromBlock: "0x" + from.toString(16), toBlock: "0x" + to.toString(16), topics: [APPROVAL_TOPICS, "0x" + owner.slice(2).toLowerCase().padStart(64, "0")] }]);
+      if (j.error) {
+        // Alchemy names a range that fits; any other error is real.
+        const hint = j.error.message.match(/\[(0x[0-9a-f]+),\s*(0x[0-9a-f]+)\]/i);
+        if (/size exceeded|10K logs|too many|more than/i.test(j.error.message)) throw new TooManyLogs(hint ? BigInt(hint[2]) : undefined);
+        throw new Error(j.error.message.slice(0, 160));
+      }
+      return j.result as Log[];
+    },
+    call: async (to, data) => (await client.call({ to, data })).data ?? "0x",
+    isContract: async (a) => {
+      const code = await client.getCode({ address: a });
+      return !!code && code !== "0x";
+    },
+  };
 }
